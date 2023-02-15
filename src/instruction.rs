@@ -3,18 +3,31 @@ use solana_program::program_error::ProgramError;
 use solana_program::pubkey::Pubkey;
 
 pub enum Instruction {
-    CreateGame(Pubkey),
+    CreateGame {
+        player_two: Pubkey,
+        stake_amount: u64,
+    },
     /*
     player_one: signer, writable
     game: signer, writable,
+    mint
+    escrow // seeds = ["escrow", mint_pubkey]: writable
+    token_account: writable
+    token_program
     system_program
      */
     AcceptGame,
     /*
-    player_two: signer,
+    player_two: signer
     game: writable
+    escrow // seeds = ["escrow", mint_pubkey]: writable
+    token_account: writable
+    token_program
      */
-    PlayGame { row: usize, col: usize },
+    PlayGame {
+        row: usize,
+        col: usize,
+    },
     /*
     player: signer,
     game: writable
@@ -36,8 +49,12 @@ impl Instruction {
         let (&first, rest) = data.split_first().unwrap();
         let variant = match first {
             0 => {
-                let player_two = Pubkey::deserialize(&mut &rest[..])?;
-                Self::CreateGame(player_two)
+                let player_two = Pubkey::deserialize(&mut &rest[..32])?;
+                let stake_amount = u64::deserialize(&mut &rest[32..40])?;
+                Self::CreateGame {
+                    player_two,
+                    stake_amount,
+                }
             }
             1 => Self::AcceptGame,
             2 => {

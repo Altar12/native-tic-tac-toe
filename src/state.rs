@@ -23,12 +23,15 @@ impl Sealed for Game {}
 impl Game {
     pub const LEN: usize = 32 * 2 + 9 * 2 + 1 + 32 + 1 + 32 + 8 + 1;
 
-    pub fn play(&mut self, row: usize, col: usize) -> ProgramResult {
+    pub fn play(&mut self, player: &Pubkey, row: usize, col: usize) -> ProgramResult {
         if self.state == GameState::Unaccepted {
             return Err(Error::UnacceptedGame.into());
         }
         if self.state != GameState::Ongoing {
             return Err(Error::GameAlreayOver.into());
+        }
+        if self.players[(self.turns % 2) as usize] != *player {
+            return Err(Error::CanNotPlay.into());
         }
         if row > 3 || col > 3 {
             return Err(Error::InvalidTileSelected.into());
@@ -43,26 +46,21 @@ impl Game {
         };
         self.board[row][col] = Some(symbol);
         self.turns += 1;
-        self.update_state();
+        self.update_state(player);
 
         Ok(())
     }
-    fn update_state(&mut self) {
-        let current_player = self.players[(self.turns % 2) as usize];
+    fn update_state(&mut self, player: &Pubkey) {
         for i in 0..3 {
             if let Some(_) = self.board[i][0] {
                 if self.board[i][0] == self.board[i][1] && self.board[i][0] == self.board[i][2] {
-                    self.state = GameState::Over {
-                        winner: current_player,
-                    };
+                    self.state = GameState::Over { winner: *player };
                     return;
                 }
             }
             if let Some(_) = self.board[0][i] {
                 if self.board[0][i] == self.board[1][i] && self.board[0][i] == self.board[2][i] {
-                    self.state = GameState::Over {
-                        winner: current_player,
-                    };
+                    self.state = GameState::Over { winner: *player };
                     return;
                 }
             }

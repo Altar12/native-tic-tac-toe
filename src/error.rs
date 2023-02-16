@@ -15,6 +15,14 @@ pub enum Error {
     InvalidTileSelected,
     #[error("Selected tile is already occupied")]
     TileOccupied,
+    #[error("Either the player not part of the game, or it is not player's turn")]
+    CanNotPlay,
+    #[error("Can not close an ongoing game")]
+    OngoingGame,
+    #[error("Game has already been accepted and can't be closed")]
+    UnclosableGame,
+    #[error("You can not close the provided game")]
+    UnauthorizedToClose,
 }
 
 impl From<Error> for ProgramError {

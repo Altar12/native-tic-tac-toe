@@ -29,18 +29,28 @@ pub enum Instruction {
         col: usize,
     },
     /*
-    player: signer,
+    player: signer
     game: writable
      */
     CloseGame,
     /*
-    player_one: signer,
+    player_one
     game: writable
+    escrow: writable
+    authority
+    token_program
+    system_program
+    winner_token_account/token_account_one: writable
+    token_account_two: writable (might not be present)
      */
     CancelGame,
     /*
-    player_one: signer,
+    player_one: signer
     game: writable
+    escrow: writable
+    token_account: writable
+    authority
+    token_program
      */
 }
 

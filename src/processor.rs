@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::instruction::Instruction;
 use crate::state::{Game, GameState};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::BorshSerialize;
 use solana_program::{
     account_info::{next_account_info, AccountInfo},
     borsh::try_from_slice_unchecked,
@@ -212,13 +212,208 @@ fn play_game(
     row: usize,
     col: usize,
 ) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let player = next_account_info(account_info_iter)?;
+    let game_account = next_account_info(account_info_iter)?;
+
+    // account validation
+    if !player.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if game_account.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mut game = try_from_slice_unchecked::<Game>(&game_account.data.borrow()).unwrap();
+
+    // play the game
+    game.play(player.key, row, col)?;
+
     Ok(())
 }
 
 fn close_game(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let player_one = next_account_info(account_info_iter)?;
+    let game_account = next_account_info(account_info_iter)?;
+    let escrow = next_account_info(account_info_iter)?;
+    let authority = next_account_info(account_info_iter)?;
+    let token_program = next_account_info(account_info_iter)?;
+    let system_program = next_account_info(account_info_iter)?;
+
+    // account validation
+    if game_account.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if *escrow.owner != TOKEN_PROGRAM_ID {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if *token_program.key != TOKEN_PROGRAM_ID || *system_program.key != SYSTEM_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    let (authority_key, bump) =
+        Pubkey::find_program_address(&["authority".as_bytes().as_ref()], program_id);
+    if *authority.key != authority_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let game = try_from_slice_unchecked::<Game>(&game_account.data.borrow()).unwrap();
+    if *player_one.key != game.players[0] {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let (escrow_key, _) = Pubkey::find_program_address(
+        &["escrow".as_bytes().as_ref(), game.stake_mint.as_ref()],
+        program_id,
+    );
+    if *escrow.key != escrow_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // check game state and close logic
+    if let GameState::Unaccepted = game.state {
+        return Err(Error::UnacceptedGame.into());
+    } else if let GameState::Ongoing = game.state {
+        return Err(Error::OngoingGame.into());
+    } else if let GameState::Draw = game.state {
+        let token_account_one = next_account_info(account_info_iter)?;
+        let token_account_two = next_account_info(account_info_iter)?;
+
+        if *token_account_one.owner != TOKEN_PROGRAM_ID
+            || *token_account_two.owner != TOKEN_PROGRAM_ID
+        {
+            return Err(ProgramError::InvalidArgument);
+        }
+        let receive_account_one = Account::unpack(&token_account_one.data.borrow())?;
+        let receive_account_two = Account::unpack(&token_account_two.data.borrow())?;
+
+        if receive_account_one.owner != game.players[0]
+            || receive_account_two.owner != game.players[1]
+        {
+            return Err(ProgramError::InvalidArgument);
+        }
+        if receive_account_one.mint != game.stake_mint
+            || receive_account_two.mint != game.stake_mint
+        {
+            return Err(ProgramError::InvalidArgument);
+        }
+        invoke_signed(
+            &instruction::transfer(
+                &TOKEN_PROGRAM_ID,
+                &escrow_key,
+                token_account_one.key,
+                &authority_key,
+                &[],
+                game.stake_amount,
+            )?,
+            &[escrow.clone(), token_account_one.clone(), authority.clone()],
+            &[&["authority".as_bytes().as_ref(), &[bump]]],
+        )?;
+        invoke_signed(
+            &instruction::transfer(
+                &TOKEN_PROGRAM_ID,
+                &escrow_key,
+                token_account_two.key,
+                &authority_key,
+                &[],
+                game.stake_amount,
+            )?,
+            &[escrow.clone(), token_account_two.clone(), authority.clone()],
+            &[&["authority".as_bytes().as_ref(), &[bump]]],
+        )?;
+    } else if let GameState::Over { winner } = game.state {
+        let token_account = next_account_info(account_info_iter)?;
+        if *token_account.owner != TOKEN_PROGRAM_ID {
+            return Err(ProgramError::IllegalOwner);
+        }
+        let receive_account = Account::unpack(&token_account.data.borrow())?;
+        if receive_account.owner != winner || receive_account.mint != game.stake_mint {
+            return Err(ProgramError::InvalidArgument);
+        }
+        invoke_signed(
+            &instruction::transfer(
+                &TOKEN_PROGRAM_ID,
+                &escrow_key,
+                token_account.key,
+                &authority_key,
+                &[],
+                2 * game.stake_amount,
+            )?,
+            &[escrow.clone(), token_account.clone(), authority.clone()],
+            &[&["authority".as_bytes().as_ref(), &[bump]]],
+        )?;
+    }
+    let game_account_balance = game_account.lamports();
+    **game_account.try_borrow_mut_lamports()? -= game_account_balance;
+    **player_one.try_borrow_mut_lamports()? += game_account_balance;
+
     Ok(())
 }
 
 fn cancel_game(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let account_info_iter = &mut accounts.iter();
+    let player_one = next_account_info(account_info_iter)?;
+    let game_account = next_account_info(account_info_iter)?;
+    let escrow = next_account_info(account_info_iter)?;
+    let token_account = next_account_info(account_info_iter)?;
+    let authority = next_account_info(account_info_iter)?;
+    let token_program = next_account_info(account_info_iter)?;
+
+    // account validation
+    if !player_one.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    if game_account.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    if *escrow.owner != TOKEN_PROGRAM_ID || *token_account.owner != TOKEN_PROGRAM_ID {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let (authority_key, bump) =
+        Pubkey::find_program_address(&["authority".as_bytes().as_ref()], program_id);
+    if *authority.key != authority_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if *token_program.key != TOKEN_PROGRAM_ID {
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    let game = try_from_slice_unchecked::<Game>(&game_account.data.borrow()).unwrap();
+    if game.state != GameState::Unaccepted {
+        return Err(Error::UnclosableGame.into());
+    }
+    if *player_one.key != game.players[0] {
+        return Err(Error::UnauthorizedToClose.into());
+    }
+    let (escrow_key, _) = Pubkey::find_program_address(
+        &["escrow".as_bytes().as_ref(), game.stake_mint.as_ref()],
+        program_id,
+    );
+    if *escrow.key != escrow_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let receive_account = Account::unpack(&token_account.data.borrow())?;
+    if receive_account.owner != *player_one.key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if receive_account.mint != game.stake_mint {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // transfer tokens back to user
+    invoke_signed(
+        &instruction::transfer(
+            &TOKEN_PROGRAM_ID,
+            &escrow_key,
+            token_account.key,
+            &authority_key,
+            &[],
+            game.stake_amount,
+        )?,
+        &[escrow.clone(), token_account.clone(), authority.clone()],
+        &[&["authority".as_bytes().as_ref(), &[bump]]],
+    )?;
+
+    // transfer lamports from game account to user
+    let game_account_balance = game_account.lamports();
+    **game_account.try_borrow_mut_lamports()? -= game_account_balance;
+    **player_one.try_borrow_mut_lamports()? += game_account_balance;
+
     Ok(())
 }
